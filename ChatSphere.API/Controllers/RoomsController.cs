@@ -1,6 +1,7 @@
 ﻿using ChatSphere.API.Models;
 using ChatSphere.API.Models.DTOs;
 using ChatSphere.API.Repositories.Interfaces;
+using ChatSphere.API.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -13,10 +14,14 @@ namespace ChatSphere.API.Controllers
     public class RoomsController : ControllerBase
     {
         private readonly IRoomRepository _roomRepository;
+        private readonly IOnlineUserTracker _tracker; 
 
-        public RoomsController(IRoomRepository roomRepository)
+
+        public RoomsController(IRoomRepository roomRepository, IOnlineUserTracker tracker)
         {
             _roomRepository = roomRepository;
+            _tracker = tracker;
+
         }
 
         [HttpPost("CreateRoom")]
@@ -84,6 +89,14 @@ namespace ChatSphere.API.Controllers
                 throw new UnauthorizedAccessException("User ID not found in token.");
             }
             return userId;
+        }
+
+        [HttpGet("{roomId}/online")]
+        public IActionResult GetOnlineUsers(string roomId)
+        {
+            // Fetch directly from memory - super fast, no SQL involved![cite: 2]
+            var users = _tracker.GetOnlineUsersInRoom(roomId);
+            return Ok(users);
         }
     }
 }

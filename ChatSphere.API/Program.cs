@@ -1,8 +1,11 @@
+using ChatSphere.API.Hubs; // Ensure you have this for ChatHub
+using ChatSphere.API.Repositories;
 using ChatSphere.API.Repositories.Implementations;
 using ChatSphere.API.Repositories.Interfaces;
 using ChatSphere.API.Services.Implementations;
 using ChatSphere.API.Services.Interfaces;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Connections;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using System.Text;
@@ -32,22 +35,33 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
-// --- 2. DEPENDENCY INJECTION ---
+// --- 2. SIGNALR CONFIGURATION ---
+builder.Services.AddSignalR(); // Required for Real-time Messaging
+
+// --- 3. DEPENDENCY INJECTION (Corrected Lifetimes) ---
+
+// Singleton: App-wide instances
 builder.Services.AddSingleton<IDbConnnectionFactory, DbConnnectionFactory>();
-builder.Services.AddScoped<ITokenService, TokenService>();
-builder.Services.AddScoped<IPasswordHasher, PasswordHasher>();
+builder.Services.AddSingleton<ITokenService, TokenService>(); // Changed from Scoped to Singleton
+builder.Services.AddSingleton<IOnlineUserTracker, OnlineUserTracker>(); // Must be Singleton for presence
+
+// Scoped: Once per HTTP Request[cite: 2]
 builder.Services.AddScoped<IUserRepository, UserRepository>();
 builder.Services.AddScoped<IRoomRepository, RoomRepository>();
+builder.Services.AddScoped<IMessageRepository, MessageRepository>();
+
+// Transient: New every time requested[cite: 2]
+builder.Services.AddTransient<IPasswordHasher, PasswordHasher>(); // Changed from Scoped to Transient[cite: 2]
+builder.Services.AddTransient<IMessageFormatter, MessageFormatter>();
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 
-// --- 3. SWAGGER WITH TOKEN VERIFIER (LOCK ICON) ---
+// --- 4. SWAGGER CONFIGURATION ---
 builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo { Title = "ChatSphere API", Version = "v1" });
 
-    // "Authorize" button setup
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         Name = "Authorization",
@@ -58,17 +72,12 @@ builder.Services.AddSwaggerGen(options =>
         Description = "Enter your JWT token only"
     });
 
-    // Make all endpoints require the token in Swagger UI
     options.AddSecurityRequirement(new OpenApiSecurityRequirement
     {
         {
             new OpenApiSecurityScheme
             {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
+                Reference = new OpenApiReference { Type = ReferenceType.SecurityScheme, Id = "Bearer" }
             },
             Array.Empty<string>()
         }
@@ -77,7 +86,7 @@ builder.Services.AddSwaggerGen(options =>
 
 var app = builder.Build();
 
-// --- 4. MIDDLEWARE PIPELINE ---
+// --- 5. MIDDLEWARE PIPELINE ---
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -86,10 +95,13 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// Authentication HAMESHA Authorization se pehle aana chahiye
+// Authentication MUST come before Authorization
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+
+// Map the SignalR Hub[cite: 2]
+app.MapHub<ChatHub>("/hubs/chat");
 
 app.Run();

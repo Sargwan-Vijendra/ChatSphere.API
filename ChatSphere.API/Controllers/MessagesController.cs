@@ -1,11 +1,39 @@
-﻿using Microsoft.AspNetCore.Http;
+﻿using ChatSphere.API.Models.DTOs;
+using ChatSphere.API.Repositories.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace ChatSphere.API.Controllers
+namespace ChatSphere.API.Controllers;
+
+[Authorize]
+[ApiController]
+[Route("api/[controller]")]
+public class MessagesController(IMessageRepository messageRepo) : ControllerBase
 {
-    [Route("api/[controller]")]
-    [ApiController]
-    public class MessagesController : ControllerBase
+ 
+    [HttpGet("{roomId}")]
+    [ProducesResponseType(StatusCodes.Status200OK, Type = typeof(IEnumerable<MessageDto>))]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> GetChatHistory(
+        Guid roomId,
+        [FromQuery] DateTime? cursor,
+        [FromQuery] int limit = 50)
     {
+        // 1. Basic validation of parameters
+        if (limit <= 0 || limit > 100) limit = 50;
+
+        try
+        {
+            // 2. Fetch from the Scoped Repository using ADO.NET logic
+            var messages = await messageRepo.GetMessagesByRoomAsync(roomId, cursor, limit);
+
+            // 3. Return the historical data
+            return Ok(messages);
+        }
+        catch (Exception ex)
+        {
+            // In a real app, log the exception (ex)
+            return BadRequest(new { message = "Could not retrieve message history." });
+        }
     }
 }

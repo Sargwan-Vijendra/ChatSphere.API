@@ -1,6 +1,12 @@
-﻿namespace ChatSphere.API.Services.Interfaces
+﻿namespace ChatSphere.API.Services.Interfaces;
+
+public interface IMessageFormatter
 {
-    public class IMessageFormatter
-    {
-    }
+    /// <summary>
+    /// Trims, sanitizes, and formats raw message text.
+    /// </summary>
+    string Format(string text);
+
+    Guid InstanceId { get; }
 }
+
