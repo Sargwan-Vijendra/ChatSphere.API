@@ -1,5 +1,3 @@
-// src/types/index.ts
-
 export interface AuthResponse {
     token: string;
     userId: string;
@@ -15,9 +13,14 @@ export interface Message {
     displayName?: string;
 }
 
-// Add this exported member
 export interface Room {
     roomId: string;
     name: string;
     description?: string;
+    isPrivate: boolean;
+    isMember?: boolean;
+}
+
+export interface JoinRoomRequest {
+    roomId: string;
 }

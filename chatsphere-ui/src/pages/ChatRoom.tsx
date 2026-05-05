@@ -3,219 +3,236 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api/axiosInstance';
 import { useSignalR } from '../hooks/useSignalR';
 import { useAuth } from '../hooks/useAuth';
-import DIDiagnostics from '../components/DIDiagnostics';
 import type { Message, Room } from '../types';
 
 const ChatRoom: React.FC = () => {
     const { logout } = useAuth();
     const navigate = useNavigate();
 
-    // --- State Management ---
+    // --- State ---
     const [rooms, setRooms] = useState<Room[]>([]);
-    const [selectedRoom, setSelectedRoom] = useState<string | null>(null);
-    const [inputMessage, setInputMessage] = useState<string>('');
+    const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+    const [joinedRoomIds, setJoinedRoomIds] = useState<Set<string>>(new Set());
     const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
-    const [newRoomName, setNewRoomName] = useState<string>('');
-    const [showCreateModal, setShowCreateModal] = useState<boolean>(false);
+    const [inputMessage, setInputMessage] = useState('');
 
-    // SignalR Hook for Real-time Messaging
-    const { messages, setMessages, sendMessage } = useSignalR(selectedRoom);
+    // Modal State
+    const [showModal, setShowModal] = useState(false);
+    const [newRoom, setNewRoom] = useState({ name: '', isPrivate: false, description: '' });
+
+    // Helpers
+    const currentRoom = rooms.find(r => r.roomId === selectedRoomId);
+    const isUserMember = selectedRoomId ? joinedRoomIds.has(selectedRoomId) : false;
+
+    // SignalR Hook -sendMessage handles the "Message Sending" feature
+    const { messages, setMessages, sendMessage } = useSignalR(isUserMember ? selectedRoomId : null);
     const scrollRef = useRef<HTMLDivElement>(null);
 
-    // --- 1. Fetch Rooms List ---
+    // --- 1. Fetch Rooms & Initial Membership (On Mount) ---
     useEffect(() => {
-        const fetchRooms = async () => {
+        const loadInitialData = async () => {
             try {
+                // Hits your [HttpGet("RoomsList")]
                 const res = await api.get<Room[]>('/Rooms/RoomsList');
                 setRooms(res.data);
-                // Auto-select first room if none selected
-                if (res.data.length > 0 && !selectedRoom) {
-                    setSelectedRoom(res.data[0].roomId);
-                }
+
+                const joined = res.data.filter(r => r.isMember).map(r => r.roomId);
+                setJoinedRoomIds(new Set(joined));
             } catch (error) {
-                console.error("Failed to load rooms:", error);
+                console.error("Failed to load initial rooms:", error);
             }
         };
-
-        fetchRooms();
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+        loadInitialData();
     }, []);
 
-    // --- 2. Room Switching & Data Synchronization ---
-    useEffect(() => {
-        if (!selectedRoom) return;
+    // --- 2. Switching Logic (WhatsApp Style) ---
+    const handleRoomSelect = async (roomId: string) => {
+        setSelectedRoomId(roomId); // This "picks" the room
 
-        const syncRoomData = async () => {
+        if (joinedRoomIds.has(roomId)) {
             try {
-                // Fetch Message History and Online Presence simultaneously
+                // Hits [HttpGet("api/Messages/{roomId}")] and [HttpGet("api/Rooms/{roomId}/online")]
                 const [msgRes, userRes] = await Promise.all([
-                    api.get<Message[]>(`/messages/${selectedRoom}`),
-                    api.get<string[]>(`/Rooms/${selectedRoom}/online`)
+                    api.get<Message[]>(`/Messages/${roomId}`),
+                    api.get<string[]>(`/Rooms/${roomId}/online`)
                 ]);
-
-                // .reverse() ensures the oldest history is at the top, newest at bottom
                 setMessages(msgRes.data.reverse());
                 setOnlineUsers(userRes.data);
             } catch (error) {
-                console.error("Sync error for room:", selectedRoom, error);
+                console.error("Error switching rooms:", error);
             }
-        };
+        } else {
+            setMessages([]);
+            setOnlineUsers([]);
+        }
+    };
 
-        syncRoomData();
-    }, [selectedRoom, setMessages]);
-
-    // --- 3. Auto-scroll to Bottom ---
-    useEffect(() => {
-        scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
-
-    // --- 4. Room Actions ---
-    const handleCreateRoom = async (e: React.BaseSyntheticEvent) => {
-        e.preventDefault();
-        if (!newRoomName.trim()) return;
+    // --- 3. Join Logic (Matches your JoinRoom DTO) ---
+    const onJoinRoom = async () => {
+        if (!selectedRoomId) return;
         try {
-            await api.post('/Rooms/CreateRoom', { name: newRoomName });
-            setNewRoomName('');
-            setShowCreateModal(false);
-            // Refresh list after creation
+            // Sends the joinRoomRequest object to [HttpPost("join/{id}")]
+            await api.post(`/Rooms/join/${selectedRoomId}`, { roomId: selectedRoomId });
+
+            setJoinedRoomIds(prev => new Set(prev).add(selectedRoomId));
+
+            // Sync data now that membership is confirmed
+            const [msgRes, userRes] = await Promise.all([
+                api.get<Message[]>(`/Messages/${selectedRoomId}`),
+                api.get<string[]>(`/Rooms/${selectedRoomId}/online`)
+            ]);
+            setMessages(msgRes.data.reverse());
+            setOnlineUsers(userRes.data);
+        } catch (error) {
+            console.error("Join failed:", error);
+            alert("Could not join room.");
+        }
+    };
+
+    // --- 4. Room Management ---
+    const onCreateRoom = async (e: React.FormEvent) => {
+        e.preventDefault();
+        try {
+            // Hits [HttpPost("CreateRoom")]
+            await api.post('/Rooms/CreateRoom', newRoom);
+            setNewRoom({ name: '', isPrivate: false, description: '' });
+            setShowModal(false);
+
             const res = await api.get<Room[]>('/Rooms/RoomsList');
             setRooms(res.data);
         } catch (error) {
             console.error("Creation error:", error);
-            alert("Could not create room.");
         }
     };
 
-    const handleDeleteRoom = async (roomId: string) => {
-        if (!window.confirm("Are you sure you want to delete this room? This action is permanent.")) return;
+    const onDeleteRoom = async (id: string) => {
+        if (!window.confirm("Permanently delete this room?")) return;
         try {
-            await api.delete(`/Rooms/DeleteRoom/${roomId}`);
-            if (selectedRoom === roomId) setSelectedRoom(null);
-            // Refresh list after deletion
+            // Hits [HttpDelete("DeleteRoom/{id}")]
+            await api.delete(`/Rooms/DeleteRoom/${id}`);
+            if (selectedRoomId === id) setSelectedRoomId(null);
             const res = await api.get<Room[]>('/Rooms/RoomsList');
             setRooms(res.data);
         } catch (error) {
-            console.error("Deletion error:", error);
-            alert("Delete failed.");
+            console.error("Delete error:", error);
         }
     };
 
-    const handleLogout = () => {
-        logout();
-        navigate('/');
-    };
+    useEffect(() => {
+        scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messages]);
 
     return (
-        <div style={layoutStyle}>
-            {/* Sidebar: Room Management */}
-            <div style={sidebarStyle}>
-                <div style={sidebarHeader}>
-                    <h2 style={{ fontSize: '20px', margin: 0, color: '#007bff' }}>ChatSphere</h2>
-                    <button onClick={() => setShowCreateModal(true)} style={addBtnStyle} title="Create Room">+</button>
-                </div>
+        <div style={containerStyle}>
+            {/* Sidebar */}
+            <aside style={sidebarStyle}>
+                <header style={sideHeader}>
+                    <h2 style={{ fontSize: '18px', margin: 0 }}>ChatSphere</h2>
+                    <button onClick={() => setShowModal(true)} style={actionBtn}>+</button>
+                </header>
 
-                <div style={scrollArea}>
+                <nav style={roomListNav}>
                     {rooms.map(room => (
-                        <div key={room.roomId} style={roomWrapper}>
+                        <div key={room.roomId} style={roomItemWrapper}>
                             <div
-                                onClick={() => setSelectedRoom(room.roomId)}
+                                onClick={() => handleRoomSelect(room.roomId)}
                                 style={{
-                                    ...roomItemStyle,
-                                    backgroundColor: selectedRoom === room.roomId ? '#007bff' : 'transparent',
-                                    color: selectedRoom === room.roomId ? 'white' : '#444'
+                                    ...roomItem,
+                                    backgroundColor: selectedRoomId === room.roomId ? '#383a40' : 'transparent',
+                                    color: selectedRoomId === room.roomId ? '#fff' : '#949ba4'
                                 }}
                             >
-                                # {room.name}
+                                <span>{room.isPrivate ? '🔒' : '#'}</span> {room.name}
+                                {joinedRoomIds.has(room.roomId) && <span style={memberBadge}>Member</span>}
                             </div>
-                            <button
-                                onClick={() => handleDeleteRoom(room.roomId)}
-                                style={deleteBtnStyle}
-                                title="Delete Room"
-                            >
-                                🗑️
-                            </button>
+                            <button onClick={() => onDeleteRoom(room.roomId)} style={miniDelete}>×</button>
                         </div>
                     ))}
-                </div>
+                </nav>
 
-                <div style={userFooter}>
-                    <button onClick={handleLogout} style={logoutBtnStyle}>Sign Out</button>
-                </div>
-            </div>
+                <footer style={sideFooter}>
+                    <button onClick={() => { logout(); navigate('/'); }} style={logoutBtn}>Logout</button>
+                </footer>
+            </aside>
 
-            {/* Main Chat Content */}
-            <div style={mainChatStyle}>
-                <div style={chatHeader}>
-                    <h3 style={{ margin: 0 }}>
-                        {rooms.find(r => r.roomId === selectedRoom)?.name || "Select a Room"}
-                    </h3>
-                </div>
+            {/* Chat Body */}
+            <main style={chatMain}>
+                <header style={chatHeader}>
+                    <div style={{ fontWeight: 'bold' }}>
+                        {currentRoom ? `# ${currentRoom.name}` : "Select a Room"}
+                    </div>
+                </header>
 
-                <div style={messageListStyle}>
-                    {messages.map((msg, idx) => (
-                        <div key={idx} style={messageBubble}>
-                            <div style={senderName}>{msg.username}</div>
-                            <div style={{ color: '#333' }}>{msg.content}</div>
-                            <div style={timestampStyle}>{new Date(msg.timestamp).toLocaleTimeString()}</div>
+                {selectedRoomId ? (
+                    isUserMember ? (
+                        <>
+                            <div style={messageContainer}>
+                                {messages.map((m, i) => (
+                                    <div key={i} style={msgRow}>
+                                        <div style={avatar}>{m.username[0].toUpperCase()}</div>
+                                        <div>
+                                            <div style={msgMeta}>
+                                                <span style={msgUser}>{m.displayName || m.username}</span>
+                                                <span style={msgTime}>{new Date(m.timestamp).toLocaleTimeString()}</span>
+                                            </div>
+                                            <div style={msgText}>{m.content}</div>
+                                        </div>
+                                    </div>
+                                ))}
+                                <div ref={scrollRef} />
+                            </div>
+                            <form style={inputForm} onSubmit={(e) => {
+                                e.preventDefault();
+                                if (inputMessage.trim()) {
+                                    sendMessage(inputMessage);
+                                    setInputMessage('');
+                                }
+                            }}>
+                                <input
+                                    style={inputStyle}
+                                    value={inputMessage}
+                                    onChange={(e) => setInputMessage(e.target.value)}
+                                    placeholder={`Message #${currentRoom?.name}`}
+                                />
+                            </form>
+                        </>
+                    ) : (
+                        <div style={joinOverlay}>
+                            <h3>Join this Conversation</h3>
+                            <p style={{ color: '#949ba4', marginBottom: '20px' }}>{currentRoom?.description || "No description provided."}</p>
+                            <button onClick={onJoinRoom} style={joinBtnLarge}>Join Room</button>
                         </div>
-                    ))}
-                    <div ref={scrollRef} />
-                </div>
+                    )
+                ) : (
+                    <div style={joinPrompt}>Select a channel to start</div>
+                )}
+            </main>
 
-                <form
-                    onSubmit={(e) => {
-                        e.preventDefault();
-                        if (inputMessage.trim()) {
-                            sendMessage(inputMessage);
-                            setInputMessage('');
-                        }
-                    }}
-                    style={inputAreaStyle}
-                >
-                    <input
-                        type="text"
-                        value={inputMessage}
-                        onChange={(e) => setInputMessage(e.target.value)}
-                        placeholder="Message this room..."
-                        style={inputFieldStyle}
-                    />
-                    <button type="submit" style={sendButtonStyle}>Send</button>
-                </form>
+            {/* Presence */}
+            <aside style={presenceStyle}>
+                <h4 style={presTitle}>Online — {onlineUsers.length}</h4>
+                {onlineUsers.map(u => (
+                    <div key={u} style={userRow}>
+                        <div style={statusDot} /> {u}
+                    </div>
+                ))}
+            </aside>
 
-                {/* Proof of Concept: DI Lifetimes Dashboard */}
-                <DIDiagnostics />
-            </div>
-
-            {/* Presence: Online Users */}
-            <div style={presenceStyle}>
-                <h4 style={presenceHeader}>Active Users ({onlineUsers.length})</h4>
-                <div style={scrollArea}>
-                    {onlineUsers.map(user => (
-                        <div key={user} style={onlineUserRow}>
-                            <span style={statusDot} /> {user}
-                        </div>
-                    ))}
-                </div>
-            </div>
-
-            {/* Modal: Create Room */}
-            {showCreateModal && (
+            {/* Modals */}
+            {showModal && (
                 <div style={modalOverlay}>
-                    <div style={modalBox}>
-                        <h3 style={{ marginTop: 0 }}>New Channel</h3>
-                        <form onSubmit={handleCreateRoom}>
-                            <label style={{ fontSize: '12px', color: '#666' }}>Room Name</label>
-                            <input
-                                style={{ ...inputFieldStyle, width: '100%', marginTop: '5px' }}
-                                value={newRoomName}
-                                onChange={(e) => setNewRoomName(e.target.value)}
-                                placeholder="e.g. general-chat"
-                                autoFocus
-                                required
-                            />
-                            <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
-                                <button type="submit" style={{ ...sendButtonStyle, flex: 1 }}>Create</button>
-                                <button type="button" onClick={() => setShowCreateModal(false)} style={cancelBtnStyle}>Cancel</button>
+                    <div style={modalContent}>
+                        <h3 style={{ marginTop: 0 }}>Create Channel</h3>
+                        <form onSubmit={onCreateRoom}>
+                            <input style={modalInput} placeholder="Name" value={newRoom.name} onChange={e => setNewRoom({ ...newRoom, name: e.target.value })} required />
+                            <textarea style={{ ...modalInput, height: '60px' }} placeholder="Description" value={newRoom.description} onChange={e => setNewRoom({ ...newRoom, description: e.target.value })} />
+                            <label style={checkLabel}>
+                                <input type="checkbox" checked={newRoom.isPrivate} onChange={e => setNewRoom({ ...newRoom, isPrivate: e.target.checked })} />
+                                Private Channel
+                            </label>
+                            <div style={modalActions}>
+                                <button type="button" onClick={() => setShowModal(false)} style={cancelBtn}>Cancel</button>
+                                <button type="submit" style={createBtn}>Create</button>
                             </div>
                         </form>
                     </div>
@@ -225,32 +242,42 @@ const ChatRoom: React.FC = () => {
     );
 };
 
-// --- Professional UI Styles ---
-const layoutStyle: React.CSSProperties = { display: 'flex', height: '100vh', backgroundColor: '#f0f2f5', fontFamily: '"Segoe UI", Roboto, Helvetica, Arial, sans-serif' };
-const sidebarStyle: React.CSSProperties = { width: '280px', backgroundColor: '#fff', borderRight: '1px solid #ddd', display: 'flex', flexDirection: 'column' };
-const sidebarHeader: React.CSSProperties = { padding: '25px 20px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
-const scrollArea: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: '10px' };
-const roomWrapper: React.CSSProperties = { display: 'flex', alignItems: 'center', marginBottom: '5px', borderRadius: '8px', transition: 'background 0.2s' };
-const roomItemStyle: React.CSSProperties = { flex: 1, padding: '12px 15px', cursor: 'pointer', borderRadius: '8px', fontSize: '14px', fontWeight: '600' };
-const deleteBtnStyle: React.CSSProperties = { padding: '10px', background: 'none', border: 'none', cursor: 'pointer', opacity: 0.4, transition: 'opacity 0.2s' };
-const addBtnStyle: React.CSSProperties = { width: '32px', height: '32px', borderRadius: '8px', border: 'none', backgroundColor: '#007bff', color: '#fff', cursor: 'pointer', fontSize: '20px', fontWeight: 'bold' };
-const mainChatStyle: React.CSSProperties = { flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#fff' };
-const chatHeader: React.CSSProperties = { padding: '20px 25px', backgroundColor: '#fff', borderBottom: '1px solid #eee', boxShadow: '0 2px 4px rgba(0,0,0,0.02)' };
-const messageListStyle: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: '25px', display: 'flex', flexDirection: 'column', gap: '15px' };
-const messageBubble: React.CSSProperties = { padding: '14px 18px', backgroundColor: '#f8f9fa', borderRadius: '18px 18px 18px 2px', maxWidth: '70%', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', alignSelf: 'flex-start', border: '1px solid #f1f1f1' };
-const senderName: React.CSSProperties = { fontWeight: 'bold', color: '#007bff', fontSize: '13px', marginBottom: '4px' };
-const timestampStyle: React.CSSProperties = { fontSize: '10px', color: '#aaa', marginTop: '8px', textAlign: 'right' };
-const inputAreaStyle: React.CSSProperties = { padding: '25px', backgroundColor: '#fff', display: 'flex', gap: '15px', borderTop: '1px solid #eee' };
-const inputFieldStyle: React.CSSProperties = { flex: 1, padding: '15px', borderRadius: '12px', border: '1px solid #ddd', outline: 'none', fontSize: '15px', boxSizing: 'border-box' };
-const sendButtonStyle: React.CSSProperties = { padding: '0 30px', backgroundColor: '#007bff', color: '#fff', border: 'none', borderRadius: '12px', fontWeight: 'bold', cursor: 'pointer', transition: 'background 0.2s' };
-const presenceStyle: React.CSSProperties = { width: '240px', backgroundColor: '#fff', borderLeft: '1px solid #ddd', display: 'flex', flexDirection: 'column' };
-const presenceHeader: React.CSSProperties = { padding: '25px 20px', margin: 0, fontSize: '15px', color: '#666', borderBottom: '1px solid #eee', textTransform: 'uppercase', letterSpacing: '1px' };
-const onlineUserRow: React.CSSProperties = { display: 'flex', alignItems: 'center', padding: '10px 20px', fontSize: '14px', fontWeight: '600', color: '#333' };
-const statusDot: React.CSSProperties = { width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#28a745', marginRight: '12px', boxShadow: '0 0 5px rgba(40,167,69,0.5)' };
-const userFooter: React.CSSProperties = { padding: '20px', borderTop: '1px solid #eee' };
-const logoutBtnStyle: React.CSSProperties = { width: '100%', padding: '12px', borderRadius: '10px', border: '1px solid #ff4d4f', color: '#ff4d4f', background: 'none', cursor: 'pointer', fontWeight: 'bold', transition: 'all 0.2s' };
-const modalOverlay: React.CSSProperties = { position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000, backdropFilter: 'blur(4px)' };
-const modalBox: React.CSSProperties = { backgroundColor: '#fff', padding: '40px', borderRadius: '20px', width: '380px', boxShadow: '0 15px 35px rgba(0,0,0,0.2)' };
-const cancelBtnStyle: React.CSSProperties = { padding: '12px 25px', borderRadius: '12px', border: '1px solid #ddd', cursor: 'pointer', background: 'none', fontWeight: '600' };
+// --- Professional Styles ---
+const containerStyle: React.CSSProperties = { display: 'flex', height: '100vh', backgroundColor: '#313338', color: '#dbdee1', fontFamily: 'Inter, sans-serif' };
+const sidebarStyle: React.CSSProperties = { width: '240px', backgroundColor: '#2b2d31', display: 'flex', flexDirection: 'column' };
+const sideHeader: React.CSSProperties = { padding: '12px 16px', borderBottom: '1px solid #1f2124', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+const roomListNav: React.CSSProperties = { flex: 1, padding: '8px', overflowY: 'auto' };
+const roomItemWrapper: React.CSSProperties = { display: 'flex', alignItems: 'center', marginBottom: '2px' };
+const roomItem: React.CSSProperties = { flex: 1, padding: '8px 12px', cursor: 'pointer', borderRadius: '4px', fontSize: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+const miniDelete: React.CSSProperties = { padding: '8px', background: 'none', border: 'none', color: '#ed4245', cursor: 'pointer', fontSize: '18px' };
+const memberBadge: React.CSSProperties = { fontSize: '10px', backgroundColor: '#5865f2', padding: '2px 6px', borderRadius: '10px' };
+const chatMain: React.CSSProperties = { flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#313338' };
+const chatHeader: React.CSSProperties = { padding: '12px 16px', borderBottom: '1px solid #1f2124', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+const messageContainer: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: '16px' };
+const msgRow: React.CSSProperties = { display: 'flex', gap: '16px', marginBottom: '18px' };
+const avatar: React.CSSProperties = { width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#5865f2', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' };
+const msgMeta: React.CSSProperties = { display: 'flex', gap: '8px', marginBottom: '4px' };
+const msgUser: React.CSSProperties = { color: '#fff', fontWeight: '600' };
+const msgTime: React.CSSProperties = { fontSize: '12px', color: '#949ba4' };
+const msgText: React.CSSProperties = { color: '#dbdee1' };
+const inputForm: React.CSSProperties = { padding: '0 16px 24px' };
+const inputStyle: React.CSSProperties = { width: '100%', padding: '11px', borderRadius: '8px', backgroundColor: '#383a40', border: 'none', color: '#dbdee1', outline: 'none' };
+const joinOverlay: React.CSSProperties = { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' };
+const joinBtnLarge: React.CSSProperties = { padding: '12px 40px', backgroundColor: '#248046', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' };
+const presenceStyle: React.CSSProperties = { width: '240px', backgroundColor: '#2b2d31', padding: '16px', borderLeft: '1px solid #1f2124' };
+const presTitle: React.CSSProperties = { fontSize: '12px', textTransform: 'uppercase', color: '#949ba4', marginBottom: '16px' };
+const userRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontSize: '14px' };
+const statusDot: React.CSSProperties = { width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#23a55a' };
+const modalOverlay: React.CSSProperties = { position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 };
+const modalContent: React.CSSProperties = { backgroundColor: '#313338', padding: '24px', borderRadius: '8px', width: '400px' };
+const modalInput: React.CSSProperties = { width: '100%', padding: '12px', backgroundColor: '#1e1f22', border: 'none', borderRadius: '4px', color: '#fff', marginBottom: '16px', boxSizing: 'border-box' };
+const checkLabel: React.CSSProperties = { display: 'flex', gap: '8px', marginBottom: '24px', fontSize: '14px', cursor: 'pointer' };
+const actionBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#fff', fontSize: '24px', cursor: 'pointer' };
+const createBtn: React.CSSProperties = { backgroundColor: '#5865f2', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '4px', cursor: 'pointer' };
+const cancelBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#fff', cursor: 'pointer' };
+const logoutBtn: React.CSSProperties = { width: '100%', padding: '10px', backgroundColor: '#da373c', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' };
+const sideFooter: React.CSSProperties = { padding: '16px', borderTop: '1px solid #1f2124' };
+const modalActions: React.CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: '16px' };
+const joinPrompt: React.CSSProperties = { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#949ba4', fontStyle: 'italic' };
 
 export default ChatRoom;
