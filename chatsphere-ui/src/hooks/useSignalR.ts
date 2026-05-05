@@ -1,65 +1,84 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import * as signalR from '@microsoft/signalr';
-import { useAuth } from './useAuth';
-import type { Message } from '../types';
 
-export const useSignalR = (roomId: string | null) => {
-    const { token } = useAuth();
+type SignalRMessage = {
+    roomId: string;
+    senderName: string;
+    content: string;
+    timestamp: string;
+};
+
+export const useSignalR = (token: string | null) => {
     const [connection, setConnection] = useState<signalR.HubConnection | null>(null);
-    const [messages, setMessages] = useState<Message[]>([]);
-
-    // Use a ref to prevent accidental multiple connections
-    const isConnecting = useRef(false);
+    const [messages, setMessages] = useState<SignalRMessage[]>([]);
+    const [isConnected, setIsConnected] = useState(false);
+    const messageQueue = useRef<{ roomId: string; content: string }[]>([]);
+    const [incomingPopup, setIncomingPopup] = useState<{ message: string; roomId: string; sender: string } | null>(null);
 
     useEffect(() => {
-        if (!token || !roomId || isConnecting.current) return;
+        if (!token) return;
 
-        isConnecting.current = true;
-
-        const newConnection = new signalR.HubConnectionBuilder()
-            .withUrl("https://localhost:7168/hubs/chat", {
-                accessTokenFactory: () => token
+        const hubConnection = new signalR.HubConnectionBuilder()
+            .withUrl(`https://localhost:7168/hubs/ChatHub?access_token=${token}`, {
+                skipNegotiation: true,
+                transport: signalR.HttpTransportType.WebSockets
             })
             .withAutomaticReconnect()
             .build();
 
-        const startConnection = async () => {
-            try {
-                await newConnection.start();
-                console.log('Connected to SignalR Hub');
-
-                await newConnection.invoke("JoinRoom", roomId);
-
-                newConnection.on("ReceiveMessage", (message: Message) => {
-                    setMessages(prev => [...prev, message]);
+        hubConnection.start()
+            .then(() => {
+                console.log('SignalR connected');
+                setIsConnected(true);
+                messageQueue.current.forEach(msg => {
+                    hubConnection.invoke('SendMessage', msg.roomId, msg.content);
                 });
+                messageQueue.current = [];
+            })
+            .catch(() => console.error('SignalR error'));
 
-                // Set state only once at the end of the async flow
-                setConnection(newConnection);
-            } catch (err) {
-                console.error('SignalR Connection Error: ', err);
-            } finally {
-                isConnecting.current = false;
-            }
-        };
+        hubConnection.on('ReceiveMessage', (msg: SignalRMessage) => {
+            console.log("Live Message Received:", msg);
+            setMessages(prev => [...prev, msg]);
 
-        startConnection();
+            // Show popup for this message
+            setIncomingPopup({
+                message: msg.content,
+                roomId: msg.roomId,
+                sender: msg.senderName,
+            });
+        });
+
+        setConnection(hubConnection);
 
         return () => {
-            if (newConnection) {
-                // Use a fire-and-forget pattern for cleanup to avoid blocking
-                newConnection.invoke("LeaveRoom", roomId).catch(() => { });
-                newConnection.stop().catch(() => { });
-                setConnection(null);
-            }
+            hubConnection.stop();
         };
-    }, [token, roomId]);
+    }, [token]);
 
-    const sendMessage = useCallback(async (content: string) => {
-        if (connection?.state === signalR.HubConnectionState.Connected && roomId) {
-            await connection.invoke("SendMessage", roomId, content);
+    const sendMessage = async (roomId: string, content: string) => {
+        if (connection && isConnected) {
+            try {
+                await connection.invoke('SendMessage', roomId, content);
+            } catch {
+                messageQueue.current.push({ roomId, content });
+            }
+        } else {
+            messageQueue.current.push({ roomId, content });
         }
-    }, [connection, roomId]);
+    };
 
-    return { messages, setMessages, sendMessage, connection };
+    const joinRoom = async (roomId: string) => {
+        if (connection && isConnected) {
+            await connection.invoke('JoinRoom', roomId);
+        }
+    };
+
+    const leaveRoom = async (roomId: string) => {
+        if (connection && isConnected) {
+            await connection.invoke('LeaveRoom', roomId);
+        }
+    };
+
+    return { messages, sendMessage, joinRoom, leaveRoom, isConnected, incomingPopup };  // ✅ Added incomingPopup here
 };

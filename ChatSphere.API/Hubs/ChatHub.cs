@@ -43,8 +43,8 @@ public class ChatHub : Hub
             // 3. Notify others in the room that someone joined
             await Clients.Group(roomId).SendAsync("UserJoined", new
             {
-                UserId = userId,
-                Username = Context.User?.Identity?.Name
+                userId = userId,
+                username = Context.User?.Identity?.Name
             });
         }
     }
@@ -85,27 +85,23 @@ public class ChatHub : Hub
     {
         if (!Guid.TryParse(roomId, out var roomGuid)) return;
 
-        // 1. Format the message using the Transient service[cite: 2]
         var formattedMessage = _formatter.Format(message);
-        var userId = Guid.Parse(Context.UserIdentifier!); // Captured from JWT[cite: 2]
+        var userId = Guid.Parse(Context.UserIdentifier!);
         var username = Context.User?.Identity?.Name ?? "Unknown";
 
-        // 2. Create a manual scope to use the Scoped Repository[cite: 2]
         using (var scope = _scopeFactory.CreateScope())
         {
             var repo = scope.ServiceProvider.GetRequiredService<IMessageRepository>();
-
-            // 3. Save to SQL via ADO.NET[cite: 2]
-            await repo.SaveMessageAsync(roomGuid, userId, formattedMessage);
+            await repo.SaveMessageAsync(roomGuid, userId, username, formattedMessage);
         }
 
-        // 4. Broadcast to the specific room group[cite: 2]
+        // FIX: Saari keys small letters mein rakhein (roomId, sender, content, timestamp)
         await Clients.Group(roomId).SendAsync("ReceiveMessage", new
         {
-            RoomId = roomId,
-            Sender = username,
-            Content = formattedMessage,
-            Timestamp = DateTime.UtcNow
+            roomId = roomId,
+            senderName = username,
+            content = formattedMessage,
+            timestamp = DateTime.UtcNow.ToString("o")
         });
     }
 

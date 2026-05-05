@@ -1,283 +1,332 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
-import api from '../api/axiosInstance';
+import { useState, useEffect, useRef } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { useSignalR } from '../hooks/useSignalR';
-import { useAuth } from '../hooks/useAuth';
-import type { Message, Room } from '../types';
+import axiosInstance from '../api/axiosInstance';
+import type { Room, Message } from '../types';
 
-const ChatRoom: React.FC = () => {
-    const { logout } = useAuth();
-    const navigate = useNavigate();
+interface RoomResponse extends Room {
+    isMember?: boolean;
+}
 
-    // --- State ---
+interface OnlineResponse {
+    length: number;
+    [key: string]: unknown;
+}
+
+interface MessageDto {
+    messageId: number;
+    content: string;
+    timestamp: string;
+    username: string;
+    displayName: string | null;
+}
+
+const ChatRoom = () => {
+    const { user, logout } = useAuth();
+    const token = localStorage.getItem('token');
     const [rooms, setRooms] = useState<Room[]>([]);
-    const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
-    const [joinedRoomIds, setJoinedRoomIds] = useState<Set<string>>(new Set());
-    const [onlineUsers, setOnlineUsers] = useState<string[]>([]);
-    const [inputMessage, setInputMessage] = useState('');
+    const [currentRoom, setCurrentRoom] = useState<Room | null>(null);
+    const [messageHistory, setMessageHistory] = useState<Message[]>([]);
+    const [messageText, setMessageText] = useState('');
+    const [newRoomName, setNewRoomName] = useState('');
+    const [isCreatingRoom, setIsCreatingRoom] = useState(false);
+    const [onlineCount, setOnlineCount] = useState(0);
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const [joinedRooms, setJoinedRooms] = useState<Set<string>>(new Set());
 
-    // Modal State
-    const [showModal, setShowModal] = useState(false);
-    const [newRoom, setNewRoom] = useState({ name: '', isPrivate: false, description: '' });
+    // ✅ Popup state for incoming messages
+    const [popup, setPopup] = useState<{ message: string; sender: string } | null>(null);
 
-    // Helpers
-    const currentRoom = rooms.find(r => r.roomId === selectedRoomId);
-    const isUserMember = selectedRoomId ? joinedRoomIds.has(selectedRoomId) : false;
+    // ✅ Destructure incomingPopup from the hook
+    const { messages, joinRoom, leaveRoom: leaveSignalR, isConnected, incomingPopup } = useSignalR(token);
 
-    // SignalR Hook -sendMessage handles the "Message Sending" feature
-    const { messages, setMessages, sendMessage } = useSignalR(isUserMember ? selectedRoomId : null);
-    const scrollRef = useRef<HTMLDivElement>(null);
-
-    // --- 1. Fetch Rooms & Initial Membership (On Mount) ---
+    // ✅ Auto‑hide popup after 3 seconds whenever a new popup appears
     useEffect(() => {
-        const loadInitialData = async () => {
-            try {
-                // Hits your [HttpGet("RoomsList")]
-                const res = await api.get<Room[]>('/Rooms/RoomsList');
-                setRooms(res.data);
+        if (incomingPopup) {
+            const showTimer = setTimeout(() => {
+                setPopup({ message: incomingPopup.message, sender: incomingPopup.sender });
+            }, 0);
+            const hideTimer = setTimeout(() => setPopup(null), 3000);
+            return () => {
+                clearTimeout(showTimer);
+                clearTimeout(hideTimer);
+            };
+        }
+    }, [incomingPopup]);
 
-                const joined = res.data.filter(r => r.isMember).map(r => r.roomId);
-                setJoinedRoomIds(new Set(joined));
-            } catch (error) {
-                console.error("Failed to load initial rooms:", error);
+    useEffect(() => {
+        const loadRooms = async () => {
+            try {
+                const response = await axiosInstance.get<RoomResponse[]>('/api/Rooms/RoomsList');
+                setRooms(response.data);
+                const joined = response.data
+                    .filter((r) => r.isMember)
+                    .map((r) => r.roomId);
+                setJoinedRooms(new Set(joined));
+            } catch (err) {
+                console.error("Failed to load rooms", err);
             }
         };
-        loadInitialData();
+        loadRooms();
     }, []);
 
-    // --- 2. Switching Logic (WhatsApp Style) ---
-    const handleRoomSelect = async (roomId: string) => {
-        setSelectedRoomId(roomId); // This "picks" the room
+    const loadMessages = async (roomId: string) => {
+        const response = await axiosInstance.get<MessageDto[]>(`/api/Messages/${roomId}`);
+        const mappedMessages: Message[] = response.data.map(msg => ({
+            id: msg.messageId.toString(),
+            content: msg.content,
+            senderName: msg.username,
+            timestamp: msg.timestamp
+        }));
+        setMessageHistory(mappedMessages);
+    };
 
-        if (joinedRoomIds.has(roomId)) {
-            try {
-                // Hits [HttpGet("api/Messages/{roomId}")] and [HttpGet("api/Rooms/{roomId}/online")]
-                const [msgRes, userRes] = await Promise.all([
-                    api.get<Message[]>(`/Messages/${roomId}`),
-                    api.get<string[]>(`/Rooms/${roomId}/online`)
-                ]);
-                setMessages(msgRes.data.reverse());
-                setOnlineUsers(userRes.data);
-            } catch (error) {
-                console.error("Error switching rooms:", error);
+    const loadOnlineCount = async (roomId: string) => {
+        try {
+            const response = await axiosInstance.get<string[] | OnlineResponse>(`/api/Rooms/${roomId}/online`);
+            if (Array.isArray(response.data)) {
+                setOnlineCount(response.data.length);
+            } else if (response.data && typeof response.data.length === 'number') {
+                setOnlineCount(response.data.length);
+            } else {
+                setOnlineCount(0);
             }
-        } else {
-            setMessages([]);
-            setOnlineUsers([]);
-        }
-    };
-
-    // --- 3. Join Logic (Matches your JoinRoom DTO) ---
-    const onJoinRoom = async () => {
-        if (!selectedRoomId) return;
-        try {
-            // Sends the joinRoomRequest object to [HttpPost("join/{id}")]
-            await api.post(`/Rooms/join/${selectedRoomId}`, { roomId: selectedRoomId });
-
-            setJoinedRoomIds(prev => new Set(prev).add(selectedRoomId));
-
-            // Sync data now that membership is confirmed
-            const [msgRes, userRes] = await Promise.all([
-                api.get<Message[]>(`/Messages/${selectedRoomId}`),
-                api.get<string[]>(`/Rooms/${selectedRoomId}/online`)
-            ]);
-            setMessages(msgRes.data.reverse());
-            setOnlineUsers(userRes.data);
         } catch (error) {
-            console.error("Join failed:", error);
-            alert("Could not join room.");
-        }
-    };
-
-    // --- 4. Room Management ---
-    const onCreateRoom = async (e: React.FormEvent) => {
-        e.preventDefault();
-        try {
-            // Hits [HttpPost("CreateRoom")]
-            await api.post('/Rooms/CreateRoom', newRoom);
-            setNewRoom({ name: '', isPrivate: false, description: '' });
-            setShowModal(false);
-
-            const res = await api.get<Room[]>('/Rooms/RoomsList');
-            setRooms(res.data);
-        } catch (error) {
-            console.error("Creation error:", error);
-        }
-    };
-
-    const onDeleteRoom = async (id: string) => {
-        if (!window.confirm("Permanently delete this room?")) return;
-        try {
-            // Hits [HttpDelete("DeleteRoom/{id}")]
-            await api.delete(`/Rooms/DeleteRoom/${id}`);
-            if (selectedRoomId === id) setSelectedRoomId(null);
-            const res = await api.get<Room[]>('/Rooms/RoomsList');
-            setRooms(res.data);
-        } catch (error) {
-            console.error("Delete error:", error);
+            console.error("Online count load failed", error);
         }
     };
 
     useEffect(() => {
-        scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [messageHistory]);
+
+    const lastMessageId = useRef('');
+
+    useEffect(() => {
+        if (currentRoom && messages.length > 0) {
+            const lastMsg = messages[messages.length - 1];
+            const msgKey = `${lastMsg.roomId}-${lastMsg.timestamp}`;
+            if (lastMsg.roomId === currentRoom.roomId && msgKey !== lastMessageId.current) {
+                lastMessageId.current = msgKey;
+                setMessageHistory(prev => [...prev, {
+                    id: Date.now().toString(),
+                    content: lastMsg.content,
+                    senderName: lastMsg.senderName,
+                    timestamp: lastMsg.timestamp
+                }]);
+            }
+        }
+    }, [messages, currentRoom]);
+
+    const handleJoinRoom = async (room: Room) => {
+        setCurrentRoom(room);
+        if (!joinedRooms.has(room.roomId)) {
+            try {
+                await axiosInstance.post('/api/Rooms/join', {
+                    roomId: room.roomId,
+                    role: "Member"
+                });
+                setJoinedRooms(prev => new Set(prev).add(room.roomId));
+            } catch (error) {
+                console.error("Join API error details:", error);
+            }
+        }
+        await joinRoom(room.roomId);
+        await loadMessages(room.roomId);
+        await loadOnlineCount(room.roomId);
+    };
+
+    const handleLeaveRoom = async (roomId: string) => {
+        const confirmed = window.confirm('Leave this room?');
+        if (!confirmed) return;
+        try {
+            await axiosInstance.post('/api/Rooms/leave', { roomId: roomId });
+            await leaveSignalR(roomId);
+            setJoinedRooms(prev => {
+                const next = new Set(prev);
+                next.delete(roomId);
+                return next;
+            });
+            const response = await axiosInstance.get<RoomResponse[]>('/api/Rooms/RoomsList');
+            setRooms(response.data);
+            if (currentRoom?.roomId === roomId) {
+                setCurrentRoom(null);
+                setMessageHistory([]);
+            }
+        } catch (err) {
+            console.error("Leave failed", err);
+        }
+    };
+
+    const handleDeleteRoom = async (roomId: string) => {
+        const confirmed = window.confirm('Delete this room permanently?');
+        if (!confirmed) return;
+        try {
+            await axiosInstance.delete(`/api/Rooms/DeleteRoom/${roomId}`);
+            const response = await axiosInstance.get<RoomResponse[]>('/api/Rooms/RoomsList');
+            setRooms(response.data);
+            if (currentRoom?.roomId === roomId) {
+                setCurrentRoom(null);
+                setMessageHistory([]);
+            }
+        } catch (err) {
+            console.error("Delete failed", err);
+        }
+    };
+
+    const handleCreateRoom = async () => {
+        if (!newRoomName.trim()) return;
+        try {
+            await axiosInstance.post('/api/Rooms/CreateRoom', {
+                name: newRoomName,
+                creatorId: user?.id
+            });
+            setNewRoomName('');
+            setIsCreatingRoom(false);
+            const response = await axiosInstance.get<RoomResponse[]>('/api/Rooms/RoomsList');
+            setRooms(response.data);
+        } catch (err) {
+            console.error("Create failed", err);
+        }
+    };
+
+    const handleSendMessage = async () => {
+        if (!currentRoom || !messageText.trim()) return;
+        try {
+            await axiosInstance.post('/api/Messages/Send', {
+                roomId: currentRoom.roomId,
+                content: messageText
+            });
+            setMessageText('');
+        } catch (error) {
+            console.error("Message send failed:", error);
+        }
+    };
 
     return (
-        <div style={containerStyle}>
-            {/* Sidebar */}
-            <aside style={sidebarStyle}>
-                <header style={sideHeader}>
-                    <h2 style={{ fontSize: '18px', margin: 0 }}>ChatSphere</h2>
-                    <button onClick={() => setShowModal(true)} style={actionBtn}>+</button>
-                </header>
+        <div style={{ display: 'flex', height: '100vh', backgroundColor: '#313338', color: '#fff' }}>
+            <style>{`
+                @keyframes slideInUp {
+                    from { opacity: 0; transform: translateY(20px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+            `}</style>
 
-                <nav style={roomListNav}>
-                    {rooms.map(room => (
-                        <div key={room.roomId} style={roomItemWrapper}>
-                            <div
-                                onClick={() => handleRoomSelect(room.roomId)}
-                                style={{
-                                    ...roomItem,
-                                    backgroundColor: selectedRoomId === room.roomId ? '#383a40' : 'transparent',
-                                    color: selectedRoomId === room.roomId ? '#fff' : '#949ba4'
-                                }}
-                            >
-                                <span>{room.isPrivate ? '🔒' : '#'}</span> {room.name}
-                                {joinedRoomIds.has(room.roomId) && <span style={memberBadge}>Member</span>}
+            {/* Sidebar */}
+            <div style={{ width: 300, borderRight: '1px solid #1f2124', padding: 16, display: 'flex', flexDirection: 'column', backgroundColor: '#2b2d31' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+                    <h3 style={{ margin: 0 }}>ChatSphere</h3>
+                    <button onClick={() => setIsCreatingRoom(!isCreatingRoom)} style={{ background: '#5865f2', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
+                        {isCreatingRoom ? 'Cancel' : '+ New'}
+                    </button>
+                </div>
+
+                {isCreatingRoom && (
+                    <div style={{ marginBottom: 16, padding: 8, background: '#383a40', borderRadius: 4 }}>
+                        <input
+                            type="text"
+                            value={newRoomName}
+                            onChange={(e) => setNewRoomName(e.target.value)}
+                            placeholder="Room name"
+                            style={{ width: '100%', padding: 8, marginBottom: 8, borderRadius: 4, border: 'none', background: '#1e1f22', color: '#fff' }}
+                            onKeyDown={(e) => e.key === 'Enter' && handleCreateRoom()}
+                        />
+                        <button onClick={handleCreateRoom} style={{ width: '100%', background: '#248046', border: 'none', color: '#fff', padding: 8, cursor: 'pointer' }}>Create</button>
+                    </div>
+                )}
+
+                <div style={{ flex: 1, overflowY: 'auto' }}>
+                    {rooms.map((room) => (
+                        <div
+                            key={room.roomId}
+                            onClick={() => handleJoinRoom(room)}
+                            style={{
+                                padding: 12,
+                                marginBottom: 8,
+                                background: currentRoom?.roomId === room.roomId ? '#383a40' : 'transparent',
+                                borderRadius: 8,
+                                cursor: 'pointer'
+                            }}
+                        >
+                            <strong># {room.name}</strong>
+                            {joinedRooms.has(room.roomId) && <span style={{ fontSize: '10px', color: '#248046' }}> (Joined)</span>}
+                            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                                <button onClick={(e) => { e.stopPropagation(); handleLeaveRoom(room.roomId); }} style={{ fontSize: 10, background: 'none', border: '1px solid #ed4245', color: '#ed4245', cursor: 'pointer' }}>Leave</button>
+                                {user?.id === room.creatorId && (
+                                    <button onClick={(e) => { e.stopPropagation(); handleDeleteRoom(room.roomId); }} style={{ fontSize: 10, background: 'none', border: '1px solid #ed4245', color: '#ed4245', cursor: 'pointer' }}>Delete</button>
+                                )}
                             </div>
-                            <button onClick={() => onDeleteRoom(room.roomId)} style={miniDelete}>×</button>
                         </div>
                     ))}
-                </nav>
+                </div>
 
-                <footer style={sideFooter}>
-                    <button onClick={() => { logout(); navigate('/'); }} style={logoutBtn}>Logout</button>
-                </footer>
-            </aside>
+                <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #383a40' }}>
+                    <div style={{ fontSize: 12, marginBottom: 8 }}>Status: {isConnected ? '🟢 Connected' : '🔴 Disconnected'}</div>
+                    <button onClick={logout} style={{ width: '100%', padding: 10, backgroundColor: '#ed4245', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>Logout</button>
+                </div>
+            </div>
 
-            {/* Chat Body */}
-            <main style={chatMain}>
-                <header style={chatHeader}>
-                    <div style={{ fontWeight: 'bold' }}>
-                        {currentRoom ? `# ${currentRoom.name}` : "Select a Room"}
-                    </div>
-                </header>
-
-                {selectedRoomId ? (
-                    isUserMember ? (
-                        <>
-                            <div style={messageContainer}>
-                                {messages.map((m, i) => (
-                                    <div key={i} style={msgRow}>
-                                        <div style={avatar}>{m.username[0].toUpperCase()}</div>
-                                        <div>
-                                            <div style={msgMeta}>
-                                                <span style={msgUser}>{m.displayName || m.username}</span>
-                                                <span style={msgTime}>{new Date(m.timestamp).toLocaleTimeString()}</span>
-                                            </div>
-                                            <div style={msgText}>{m.content}</div>
-                                        </div>
-                                    </div>
-                                ))}
-                                <div ref={scrollRef} />
-                            </div>
-                            <form style={inputForm} onSubmit={(e) => {
-                                e.preventDefault();
-                                if (inputMessage.trim()) {
-                                    sendMessage(inputMessage);
-                                    setInputMessage('');
-                                }
-                            }}>
-                                <input
-                                    style={inputStyle}
-                                    value={inputMessage}
-                                    onChange={(e) => setInputMessage(e.target.value)}
-                                    placeholder={`Message #${currentRoom?.name}`}
-                                />
-                            </form>
-                        </>
-                    ) : (
-                        <div style={joinOverlay}>
-                            <h3>Join this Conversation</h3>
-                            <p style={{ color: '#949ba4', marginBottom: '20px' }}>{currentRoom?.description || "No description provided."}</p>
-                            <button onClick={onJoinRoom} style={joinBtnLarge}>Join Room</button>
+            {/* Chat Area */}
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                {currentRoom ? (
+                    <>
+                        <div style={{ padding: 16, borderBottom: '1px solid #1f2124' }}>
+                            <h2 style={{ margin: 0 }}># {currentRoom.name}</h2>
+                            <div style={{ fontSize: 12, color: '#949ba4' }}>👥 {onlineCount} online</div>
                         </div>
-                    )
+
+                        <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+                            {messageHistory.map((msg, idx) => (
+                                <div key={idx} style={{ marginBottom: 12, textAlign: msg.senderName === user?.username ? 'right' : 'left' }}>
+                                    <div style={{ display: 'inline-block', maxWidth: '70%' }}>
+                                        <div style={{ fontSize: 11, color: '#949ba4', marginBottom: 2 }}>{msg.senderName}</div>
+                                        <div style={{ padding: '8px 12px', borderRadius: 12, background: msg.senderName === user?.username ? '#5865f2' : '#383a40', color: '#fff' }}>{msg.content}</div>
+                                    </div>
+                                </div>
+                            ))}
+                            <div ref={messagesEndRef} />
+                        </div>
+
+                        <div style={{ padding: 16, display: 'flex', gap: 8 }}>
+                            <input
+                                type="text"
+                                value={messageText}
+                                onChange={(e) => setMessageText(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                                placeholder={`Message #${currentRoom.name}`}
+                                style={{ flex: 1, padding: 12, borderRadius: 8, background: '#383a40', border: 'none', color: '#fff' }}
+                            />
+                            <button onClick={handleSendMessage} style={{ padding: '0 20px', backgroundColor: '#5865f2', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>Send</button>
+                        </div>
+                    </>
                 ) : (
-                    <div style={joinPrompt}>Select a channel to start</div>
+                    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#949ba4' }}>Select a channel to start chatting</div>
                 )}
-            </main>
+            </div>
 
-            {/* Presence */}
-            <aside style={presenceStyle}>
-                <h4 style={presTitle}>Online — {onlineUsers.length}</h4>
-                {onlineUsers.map(u => (
-                    <div key={u} style={userRow}>
-                        <div style={statusDot} /> {u}
-                    </div>
-                ))}
-            </aside>
-
-            {/* Modals */}
-            {showModal && (
-                <div style={modalOverlay}>
-                    <div style={modalContent}>
-                        <h3 style={{ marginTop: 0 }}>Create Channel</h3>
-                        <form onSubmit={onCreateRoom}>
-                            <input style={modalInput} placeholder="Name" value={newRoom.name} onChange={e => setNewRoom({ ...newRoom, name: e.target.value })} required />
-                            <textarea style={{ ...modalInput, height: '60px' }} placeholder="Description" value={newRoom.description} onChange={e => setNewRoom({ ...newRoom, description: e.target.value })} />
-                            <label style={checkLabel}>
-                                <input type="checkbox" checked={newRoom.isPrivate} onChange={e => setNewRoom({ ...newRoom, isPrivate: e.target.checked })} />
-                                Private Channel
-                            </label>
-                            <div style={modalActions}>
-                                <button type="button" onClick={() => setShowModal(false)} style={cancelBtn}>Cancel</button>
-                                <button type="submit" style={createBtn}>Create</button>
-                            </div>
-                        </form>
-                    </div>
+            {/* ✅ In-app popup for new messages */}
+            {popup && (
+                <div style={{
+                    position: 'fixed',
+                    bottom: '80px',
+                    right: '20px',
+                    backgroundColor: '#5865f2',
+                    color: '#fff',
+                    padding: '12px 20px',
+                    borderRadius: '8px',
+                    maxWidth: '300px',
+                    boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+                    zIndex: 1000,
+                    animation: 'slideInUp 0.3s ease-out',
+                    fontSize: '14px',
+                    pointerEvents: 'none'
+                }}>
+                    <strong>{popup.sender}</strong><br />
+                    {popup.message.length > 50 ? popup.message.substring(0, 50) + '…' : popup.message}
                 </div>
             )}
         </div>
     );
 };
-
-// --- Professional Styles ---
-const containerStyle: React.CSSProperties = { display: 'flex', height: '100vh', backgroundColor: '#313338', color: '#dbdee1', fontFamily: 'Inter, sans-serif' };
-const sidebarStyle: React.CSSProperties = { width: '240px', backgroundColor: '#2b2d31', display: 'flex', flexDirection: 'column' };
-const sideHeader: React.CSSProperties = { padding: '12px 16px', borderBottom: '1px solid #1f2124', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
-const roomListNav: React.CSSProperties = { flex: 1, padding: '8px', overflowY: 'auto' };
-const roomItemWrapper: React.CSSProperties = { display: 'flex', alignItems: 'center', marginBottom: '2px' };
-const roomItem: React.CSSProperties = { flex: 1, padding: '8px 12px', cursor: 'pointer', borderRadius: '4px', fontSize: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
-const miniDelete: React.CSSProperties = { padding: '8px', background: 'none', border: 'none', color: '#ed4245', cursor: 'pointer', fontSize: '18px' };
-const memberBadge: React.CSSProperties = { fontSize: '10px', backgroundColor: '#5865f2', padding: '2px 6px', borderRadius: '10px' };
-const chatMain: React.CSSProperties = { flex: 1, display: 'flex', flexDirection: 'column', backgroundColor: '#313338' };
-const chatHeader: React.CSSProperties = { padding: '12px 16px', borderBottom: '1px solid #1f2124', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
-const messageContainer: React.CSSProperties = { flex: 1, overflowY: 'auto', padding: '16px' };
-const msgRow: React.CSSProperties = { display: 'flex', gap: '16px', marginBottom: '18px' };
-const avatar: React.CSSProperties = { width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#5865f2', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' };
-const msgMeta: React.CSSProperties = { display: 'flex', gap: '8px', marginBottom: '4px' };
-const msgUser: React.CSSProperties = { color: '#fff', fontWeight: '600' };
-const msgTime: React.CSSProperties = { fontSize: '12px', color: '#949ba4' };
-const msgText: React.CSSProperties = { color: '#dbdee1' };
-const inputForm: React.CSSProperties = { padding: '0 16px 24px' };
-const inputStyle: React.CSSProperties = { width: '100%', padding: '11px', borderRadius: '8px', backgroundColor: '#383a40', border: 'none', color: '#dbdee1', outline: 'none' };
-const joinOverlay: React.CSSProperties = { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' };
-const joinBtnLarge: React.CSSProperties = { padding: '12px 40px', backgroundColor: '#248046', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' };
-const presenceStyle: React.CSSProperties = { width: '240px', backgroundColor: '#2b2d31', padding: '16px', borderLeft: '1px solid #1f2124' };
-const presTitle: React.CSSProperties = { fontSize: '12px', textTransform: 'uppercase', color: '#949ba4', marginBottom: '16px' };
-const userRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', fontSize: '14px' };
-const statusDot: React.CSSProperties = { width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#23a55a' };
-const modalOverlay: React.CSSProperties = { position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.85)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 };
-const modalContent: React.CSSProperties = { backgroundColor: '#313338', padding: '24px', borderRadius: '8px', width: '400px' };
-const modalInput: React.CSSProperties = { width: '100%', padding: '12px', backgroundColor: '#1e1f22', border: 'none', borderRadius: '4px', color: '#fff', marginBottom: '16px', boxSizing: 'border-box' };
-const checkLabel: React.CSSProperties = { display: 'flex', gap: '8px', marginBottom: '24px', fontSize: '14px', cursor: 'pointer' };
-const actionBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#fff', fontSize: '24px', cursor: 'pointer' };
-const createBtn: React.CSSProperties = { backgroundColor: '#5865f2', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '4px', cursor: 'pointer' };
-const cancelBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#fff', cursor: 'pointer' };
-const logoutBtn: React.CSSProperties = { width: '100%', padding: '10px', backgroundColor: '#da373c', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' };
-const sideFooter: React.CSSProperties = { padding: '16px', borderTop: '1px solid #1f2124' };
-const modalActions: React.CSSProperties = { display: 'flex', justifyContent: 'flex-end', gap: '16px' };
-const joinPrompt: React.CSSProperties = { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#949ba4', fontStyle: 'italic' };
 
 export default ChatRoom;

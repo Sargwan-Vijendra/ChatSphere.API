@@ -5,7 +5,7 @@ namespace ChatSphere.API.Repositories.Interfaces;
 public interface IMessageRepository
 {
     // Saves a new message to the database
-    Task<long> SaveMessageAsync(Guid roomId, Guid senderId, string content);
+    Task<MessageDto> SaveMessageAsync(Guid roomId, Guid senderId, string UserName, string content);
 
     // Retrieves past messages using cursor-based pagination
     Task<IEnumerable<MessageDto>> GetMessagesByRoomAsync(Guid roomId, DateTime? cursor, int limit);

@@ -1,28 +1,25 @@
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
-import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
-import ChatRoom from './pages/ChatRoom'; // 1. Import your real ChatRoom
+import ChatRoom from './pages/ChatRoom';
+import ProtectedRoute from './components/ProtectedRoute';
+import './App.css';
 
 function App() {
     return (
-        <AuthProvider>
-            <Router>
+        <BrowserRouter>
+            <AuthProvider>
                 <Routes>
-                    {/* Public Route */}
-                    <Route path="/" element={<Login />} />
-
-                    {/* Private Routes */}
-                    <Route element={<ProtectedRoute />}>
-                        {/* 2. Swap ChatPlaceholder for ChatRoom */}
-                        <Route path="/chat" element={<ChatRoom />} />
-                    </Route>
-
-                    {/* Catch-all */}
-                    <Route path="*" element={<Navigate to="/" replace />} />
+                    <Route path="/login" element={<Login />} />
+                    <Route path="/chat" element={
+                        <ProtectedRoute>
+                            <ChatRoom />
+                        </ProtectedRoute>
+                    } />
+                    <Route path="/" element={<Navigate to="/chat" replace />} />
                 </Routes>
-            </Router>
-        </AuthProvider>
+            </AuthProvider>
+        </BrowserRouter>
     );
 }
 

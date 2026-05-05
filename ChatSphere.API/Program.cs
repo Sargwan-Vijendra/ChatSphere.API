@@ -43,6 +43,23 @@ builder.Services.AddAuthentication(options =>
         IssuerSigningKey = new SymmetricSecurityKey(
             Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ?? "YourSuperSecretKeyThatIsAtLeast32CharsLong"))
     };
+
+    // --- YE ADD KARNA HAI, KUCH HATANA NAHI HAI ---
+    options.Events = new JwtBearerEvents
+    {
+        OnMessageReceived = context =>
+        {
+            var accessToken = context.Request.Query["access_token"];
+            var path = context.HttpContext.Request.Path;
+
+            // Agar request tere SignalR hub ke liye hai
+            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs/ChatHub"))
+            {
+                context.Token = accessToken;
+            }
+            return Task.CompletedTask;
+        }
+    };
 });
 
 builder.Services.AddAuthorization();
@@ -116,6 +133,6 @@ app.UseAuthorization();
 app.MapControllers();
 
 // Map the SignalR Hub[cite: 2]
-app.MapHub<ChatHub>("/hubs/chat");
+app.MapHub<ChatHub>("/hubs/ChatHub");
 
 app.Run();

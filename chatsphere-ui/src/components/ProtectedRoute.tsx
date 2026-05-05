@@ -1,17 +1,9 @@
-import React from 'react';
-// Ensure Navigate is included in the curly braces here
-import { Navigate, Outlet } from 'react-router-dom';
-import { useAuth } from '../hooks/useAuth';
+import { Navigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';   // ✅ changed
 
-const ProtectedRoute: React.FC = () => {
-    const { token } = useAuth();
-
-    if (!token) {
-        // This is where the 'Navigate' name is used
-        return <Navigate to="/" replace />;
-    }
-
-    return <Outlet />;
+const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
+    const { isAuthenticated } = useAuth();
+    return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />;
 };
 
 export default ProtectedRoute;

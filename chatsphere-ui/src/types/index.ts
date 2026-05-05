@@ -1,26 +1,26 @@
-export interface AuthResponse {
-    token: string;
-    userId: string;
+export interface User {
+    id: string;
     username: string;
-    expiresIn: number;
+    email?: string;
 }
 
 export interface Message {
-    messageId: number;
+    id: string;
     content: string;
+    senderName: string;
     timestamp: string;
-    username: string;
-    displayName?: string;
 }
 
 export interface Room {
-    roomId: string;
+    roomId: string; // Use roomId to match your controller logic
     name: string;
+    creatorId: string;
+    createdAt: string;
     description?: string;
-    isPrivate: boolean;
-    isMember?: boolean;
+    isPrivate?: boolean;
 }
 
-export interface JoinRoomRequest {
+export interface SendMessageRequest {
     roomId: string;
+    content: string;
 }

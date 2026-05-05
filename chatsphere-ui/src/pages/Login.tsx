@@ -1,161 +1,135 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
-import api from '../api/axiosInstance';
-import { useAuth } from '../hooks/useAuth';
-// Type-only import to satisfy verbatimModuleSyntax
-import type { AuthResponse } from '../types';
+import { useAuth } from '../context/AuthContext';
+import axiosInstance from '../api/axiosInstance';
 
-const Login: React.FC = () => {
-    // 1. Local State for Form Data
-    const [username, setUsername] = useState<string>('');
-    const [password, setPassword] = useState<string>('');
-    const [error, setError] = useState<string>('');
-    const [loading, setLoading] = useState<boolean>(false);
-
-    const { login } = useAuth();
+const Login = () => {
     const navigate = useNavigate();
+    const [username, setUsername] = useState('');
+    const [password, setPassword] = useState('');
+    const [isRegistering, setIsRegistering] = useState(false);
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+    const { login } = useAuth();
 
-    // 2. Handle Form Submission with explicit typing
-    const handleSubmit = async (e: React.BaseSyntheticEvent) => {
+    const handleSubmit = async (e: React.SyntheticEvent) => {
         e.preventDefault();
         setError('');
         setLoading(true);
 
         try {
-            // Send request to your .NET 8 Auth Controller
-            const response = await api.post<AuthResponse>('/auth/login', {
-                username,
-                password
-            });
+            const endpoint = isRegistering ? '/api/Auth/register' : '/api/Auth/login';
+            const response = await axiosInstance.post(endpoint, { username, password });
 
-            // If success, save token to AuthContext and LocalStorage
-            login(response.data.token);
+            // FIX: Destructure flat properties from your C# AuthResponse
+            const { token, userId, username: resUsername } = response.data;
 
-            // Redirect user to the protected chat area
-            navigate('/chat');
-        } catch (err: unknown) {
-            // Handle Axios errors specifically to avoid 'any'
-            if (axios.isAxiosError(err)) {
-                setError(err.response?.data?.message || 'Invalid username or password');
-            } else {
-                setError('An unexpected system error occurred');
+            if (token) {
+                // Map userId to id to match your User type
+                login(token, { id: userId, username: resUsername });
+                navigate('/chat');
             }
+        } catch (err) {
+            setError(err.response?.data?.message || (isRegistering ? 'Registration failed' : 'Login failed'));
         } finally {
             setLoading(false);
         }
     };
 
     return (
-        <div style={containerStyle}>
-            <div style={cardStyle}>
-                <h2 style={{ textAlign: 'center', color: '#333', marginBottom: '20px' }}>ChatSphere</h2>
-                <form onSubmit={handleSubmit}>
-                    <div style={inputGroupStyle}>
-                        <label style={labelStyle}>Username</label>
-                        <input
-                            type="text"
-                            placeholder="Enter your username"
-                            value={username}
-                            onChange={(e) => setUsername(e.target.value)}
-                            required
-                            style={inputStyle}
-                        />
-                    </div>
+        <div
+            style={{
+                display: 'flex',
+                justifyContent: 'center',
+                alignItems: 'center',
+                height: '100vh',
+                background: '#f0f2f5'
+            }}
+        >
+            <div
+                style={{
+                    background: 'white',
+                    padding: 32,
+                    borderRadius: 8,
+                    width: 400,
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
+                }}
+            >
+                <h2 style={{ textAlign: 'center', marginBottom: 24 }}>
+                    {isRegistering ? 'Create Account' : 'Welcome to ChatSphere'}
+                </h2>
 
-                    <div style={inputGroupStyle}>
-                        <label style={labelStyle}>Password</label>
-                        <input
-                            type="password"
-                            placeholder="Enter your password"
-                            value={password}
-                            onChange={(e) => setPassword(e.target.value)}
-                            required
-                            style={inputStyle}
-                        />
-                    </div>
-
-                    {error && <div style={errorStyle}>{error}</div>}
-
-                    <button
-                        type="submit"
-                        disabled={loading}
+                {error && (
+                    <div
                         style={{
-                            ...buttonStyle,
-                            backgroundColor: loading ? '#6c757d' : '#007bff'
+                            background: '#fee',
+                            color: '#c00',
+                            padding: 8,
+                            borderRadius: 4,
+                            marginBottom: 16
                         }}
                     >
-                        {loading ? 'Authenticating...' : 'Login'}
+                        {error}
+                    </div>
+                )}
+
+                <form onSubmit={handleSubmit}>
+                    <input
+                        type="text"
+                        placeholder="Username"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        style={{
+                            width: '100%',
+                            padding: 12,
+                            marginBottom: 12,
+                            borderRadius: 4,
+                            border: '1px solid #ddd'
+                        }}
+                        required
+                        disabled={loading}
+                    />
+                    <input
+                        type="password"
+                        placeholder="Password"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        style={{
+                            width: '100%',
+                            padding: 12,
+                            marginBottom: 16,
+                            borderRadius: 4,
+                            border: '1px solid #ddd'
+                        }}
+                        required
+                        disabled={loading}
+                    />
+                    <button
+                        type="submit"
+                        style={{ width: '100%', padding: 12, marginBottom: 12 }}
+                        disabled={loading}
+                    >
+                        {loading ? 'Please wait...' : isRegistering ? 'Register' : 'Login'}
                     </button>
                 </form>
 
-                <p style={{ textAlign: 'center', marginTop: '15px', fontSize: '14px' }}>
-                    Don't have an account? <span style={{ color: '#007bff', cursor: 'pointer' }}>Register</span>
-                </p>
+                <button
+                    onClick={() => setIsRegistering(!isRegistering)}
+                    style={{
+                        width: '100%',
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#007bff',
+                        cursor: 'pointer'
+                    }}
+                >
+                    {isRegistering
+                        ? 'Already have an account? Login'
+                        : "Don't have an account? Register"}
+                </button>
             </div>
         </div>
     );
-};
-
-// --- Professional Inline Styles ---
-const containerStyle: React.CSSProperties = {
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    height: '100vh',
-    backgroundColor: '#f4f7f6',
-    fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif'
-};
-
-const cardStyle: React.CSSProperties = {
-    width: '100%',
-    maxWidth: '400px',
-    padding: '40px',
-    backgroundColor: '#fff',
-    boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-    borderRadius: '10px'
-};
-
-const inputGroupStyle: React.CSSProperties = {
-    marginBottom: '20px'
-};
-
-const labelStyle: React.CSSProperties = {
-    display: 'block',
-    marginBottom: '8px',
-    fontWeight: '600',
-    color: '#555'
-};
-
-const inputStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '12px',
-    borderRadius: '5px',
-    border: '1px solid #ddd',
-    boxSizing: 'border-box',
-    fontSize: '16px'
-};
-
-const buttonStyle: React.CSSProperties = {
-    width: '100%',
-    padding: '12px',
-    border: 'none',
-    borderRadius: '5px',
-    color: 'white',
-    fontSize: '16px',
-    fontWeight: 'bold',
-    cursor: 'pointer',
-    transition: 'background-color 0.3s ease'
-};
-
-const errorStyle: React.CSSProperties = {
-    color: '#d9534f',
-    backgroundColor: '#f2dede',
-    padding: '10px',
-    borderRadius: '4px',
-    marginBottom: '20px',
-    fontSize: '14px',
-    textAlign: 'center'
 };
 
 export default Login;

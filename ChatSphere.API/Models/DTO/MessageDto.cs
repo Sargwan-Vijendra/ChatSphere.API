@@ -14,3 +14,10 @@ public record MessageDto(
     DateTime Timestamp,
     string Username,
     string? DisplayName);
+
+public class SendMessageRequest
+{
+    public Guid RoomId { get; set; }
+    // Using 'required' ensures the property is set, or use 'string?'
+    public required string Content { get; set; }
+}

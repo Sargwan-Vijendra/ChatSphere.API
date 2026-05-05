@@ -56,8 +56,8 @@ namespace ChatSphere.API.Controllers
             }
         }
 
-        [HttpPost("join/{id}")]
-        public async Task<IActionResult> JoinRoom(joinRoomRequest request)
+        [HttpPost("join")]
+        public async Task<IActionResult> JoinRoom([FromBody] joinRoomRequest request)
         {
             var userId = GetUserId();
             var success = await _roomRepository.JoinRoomAsync(request, userId);
@@ -65,8 +65,8 @@ namespace ChatSphere.API.Controllers
             return success ? Ok("Joined successfully.") : BadRequest("Already a member or room not found.");
         }
 
-        [HttpPost("leave/{id}")]
-        public async Task<IActionResult> LeaveRoom(leftRoomRequest request)
+        [HttpPost("leave")]
+        public async Task<IActionResult> LeaveRoom([FromBody] leftRoomRequest request)
         {
             var userId = GetUserId();
             var success = await _roomRepository.LeftRoomAsync(request, userId);

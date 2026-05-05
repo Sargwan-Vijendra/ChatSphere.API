@@ -111,7 +111,7 @@ namespace ChatSphere.API.Repositories.Implementations
         {
             var rooms = new List<listRoomRequest>();
             const string query = @"
-                SELECT RM.Name, RM.Description,
+                SELECT RM.RoomId, RM.Name, RM.Description,
                 CASE 
                     WHEN RM.IsPrivate = 1 THEN 'Private'
                     WHEN RM.IsPrivate = 0 THEN 'Public'
@@ -121,8 +121,8 @@ namespace ChatSphere.API.Repositories.Implementations
                 Members.Role
                 FROM Rooms RM
                 INNER JOIN RoomMembers Members ON Members.RoomId = RM.RoomId
-                LEFT JOIN Users Us ON Us.UserId = RM.CreatedByUserId
-                WHERE  RM.IsActive = 1";
+                LEFT JOIN Users Us ON Us.UserId = RM.CreatedByUserId 
+                WHERE  RM.IsActive = 1 And  Members.UserId = @UserId";
 
             await using var conn = _connnectionFactory.CreateConnection();
             await using var cmd = new SqlCommand(query, conn);
@@ -134,11 +134,12 @@ namespace ChatSphere.API.Repositories.Implementations
             while (await reader.ReadAsync())
             {
                 rooms.Add(new listRoomRequest(
-                    reader.GetString(0),
-                    reader.IsDBNull(1) ? string.Empty : reader.GetString(1),
-                    reader.GetString(2),
-                    reader.IsDBNull(3) ? "Unknown" : reader.GetString(3),
-                    reader.GetString(4)
+                    reader.GetGuid(0),
+                    reader.GetString(1),
+                    reader.IsDBNull(2) ? string.Empty : reader.GetString(1),
+                    reader.GetString(3),
+                    reader.IsDBNull(4) ? "Unknown" : reader.GetString(3),
+                    reader.GetString(5)
                 ));
             }
             return rooms;
