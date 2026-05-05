@@ -1,3 +1,7 @@
 <Solution>
+  <Project Path="Chatsphere-UI/chatsphere-ui.esproj">
+    <Build />
+    <Deploy />
+  </Project>
   <Project Path="ChatSphere.API/ChatSphere.API.csproj" />
 </Solution>

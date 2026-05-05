@@ -122,7 +122,7 @@ namespace ChatSphere.API.Repositories.Implementations
                 FROM Rooms RM
                 INNER JOIN RoomMembers Members ON Members.RoomId = RM.RoomId
                 LEFT JOIN Users Us ON Us.UserId = RM.CreatedByUserId
-                WHERE Members.UserId = @UserId AND RM.IsActive = 1";
+                WHERE  RM.IsActive = 1";
 
             await using var conn = _connnectionFactory.CreateConnection();
             await using var cmd = new SqlCommand(query, conn);

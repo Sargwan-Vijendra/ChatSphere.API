@@ -13,6 +13,18 @@ using System.Text;
 var builder = WebApplication.CreateBuilder(args);
 
 // --- 1. JWT AUTHENTICATION CONFIGURATION ---
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowReactApp", policy =>
+    {
+        policy.WithOrigins("http://localhost:62047") // Your React Vite port
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials(); // REQUIRED for SignalR
+    });
+});
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -92,6 +104,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+app.UseCors("AllowReactApp");
 
 app.UseHttpsRedirection();
 
